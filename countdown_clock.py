@@ -432,7 +432,7 @@ class CountdownApp:
 class DateTimePicker:
     """Pure-Tk month calendar + hour/minute spinboxes. No third-party deps."""
 
-    WEEKDAY_HEADERS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+    WEEKDAY_HEADERS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"]
     MONTHS = [
         "January", "February", "March", "April", "May", "June",
         "July", "August", "September", "October", "November", "December",
@@ -511,7 +511,7 @@ class DateTimePicker:
             ttk.Label(self.grid_frame, text=label, width=4, anchor="center",
                       font=("Segoe UI", 9, "bold")).grid(row=0, column=col, padx=1, pady=(0, 2))
 
-        cal = _calendar.Calendar(firstweekday=0)  # Monday
+        cal = _calendar.Calendar(firstweekday=6)  # Sunday
         weeks = cal.monthdatescalendar(self.view_year, self.view_month)
         today = date.today()
         for r, week in enumerate(weeks, start=1):
