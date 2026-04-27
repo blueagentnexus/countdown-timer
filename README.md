@@ -1,10 +1,47 @@
 # Countdown Clock
 
-A simple always-on-top countdown widget for Windows. Days / hours / minutes to any target date.
+A simple always-on-top countdown widget for Windows. Days / hours / minutes / seconds to any target date.
+
+## Install (Windows Desktop)
+
+### Option A — Download the prebuilt EXE (easiest)
+
+1. Go to the [Releases page](https://github.com/blueagentnexus/countdown-timer/releases).
+2. Download `CountdownClock.exe` from the latest release.
+3. Move it somewhere permanent (e.g. `C:\Users\<you>\Apps\CountdownClock\`).
+4. Double-click `CountdownClock.exe` to run.
+5. (Optional) Right-click the EXE → **Send to → Desktop (create shortcut)** to pin it to your desktop.
+6. (Optional) To launch at Windows startup: open the app, click the three-dot menu (top-right), and toggle **Run at Windows Startup**.
+
+> Windows SmartScreen may warn the first time you run an unsigned EXE. Click **More info → Run anyway**.
+
+### Option B — Run from source (Python 3.10+)
+
+```powershell
+# 1. Clone the repo
+git clone https://github.com/blueagentnexus/countdown-timer.git
+cd countdown-timer
+
+# 2. Run it (no third-party dependencies — pure stdlib + tkinter)
+python countdown_clock.py
+
+# 3. (Optional) Install desktop + startup shortcuts
+python install_shortcuts.py --startup
+```
+
+### Option C — Build the EXE yourself
+
+```powershell
+pip install pyinstaller
+pyinstaller --onefile --windowed --name CountdownClock --icon stopwatch_smiley.ico countdown_clock.py
+# Output: dist\CountdownClock.exe
+```
 
 ## Features
 
-- **Countdown** in days + hours + minutes to a configurable target.
+- **Countdown** in days + hours + minutes + seconds to a configurable target date and time.
+- **Calendar picker** runs **Sunday → Saturday** (US-style week).
+- **12-hour time picker** with AM/PM.
 - **Persistent state** — closes and reopens on the same countdown, same window position, same colors, same font.
 - **Borderless, draggable** — click and drag anywhere on the clock to move it.
 - **Resizable** — drag the small handle in the bottom-right corner. Font scales with height.
@@ -14,32 +51,14 @@ A simple always-on-top countdown widget for Windows. Days / hours / minutes to a
 - **Background color** configurable too.
 - **Label** — optional small caption above the numbers.
 - **Run at Windows startup** — toggle from the settings menu.
-- **Desktop shortcut** — run `install_shortcuts.py` to create one.
 
-## Run It
+## Shortcuts (source install)
 
-```
-python countdown_clock.py
-```
+From the repo folder:
 
-First run sets a default target 30 days from now. Open the three-dot menu to change it.
-
-## Shortcuts
-
-From this folder:
-
-- **Desktop icon only:**
-  ```
-  python install_shortcuts.py
-  ```
-- **Desktop + launch at Windows startup:**
-  ```
-  python install_shortcuts.py --startup
-  ```
-- **Remove shortcuts:**
-  ```
-  python install_shortcuts.py --remove
-  ```
+- **Desktop icon only:** `python install_shortcuts.py`
+- **Desktop + launch at Windows startup:** `python install_shortcuts.py --startup`
+- **Remove shortcuts:** `python install_shortcuts.py --remove`
 
 You can also toggle "Run at Windows Startup" directly from the app's settings menu.
 
