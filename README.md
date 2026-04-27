@@ -1,6 +1,6 @@
 # Countdown Clock
 
-A simple always-on-top countdown widget for Windows. Days / hours / minutes / seconds to any target date.
+A simple always-on-top countdown widget for Windows. Days / hours / minutes / seconds to any target date. **Now supports multiple independent timers** — track as many countdowns as you want, each with its own settings and window.
 
 ## Install (Windows Desktop)
 
@@ -39,10 +39,13 @@ pyinstaller --onefile --windowed --name CountdownClock --icon stopwatch_smiley.i
 
 ## Features
 
+- **Multiple timers** — add as many independent countdowns as you want from the **menu → New Timer**. Each has its own target, label, font, colors, and position.
+- **Per-timer hide/show** — the **✕** button hides one timer (others keep ticking). Reopen it from any other timer's **menu → Show Hidden Timers**.
+- **Permanent delete** — only via **menu → Delete This Timer** (with confirmation), so you can't lose a timer by accident.
 - **Countdown** in days + hours + minutes + seconds to a configurable target date and time.
 - **Calendar picker** runs **Sunday → Saturday** (US-style week).
 - **12-hour time picker** with AM/PM.
-- **Persistent state** — closes and reopens on the same countdown, same window position, same colors, same font.
+- **Persistent state** — every timer reopens with the same target, position, colors, and font.
 - **Borderless, draggable** — click and drag anywhere on the clock to move it.
 - **Resizable** — drag the small handle in the bottom-right corner. Font scales with height.
 - **Always on top** — toggle from the settings menu.
@@ -74,6 +77,8 @@ Delete that file to reset to defaults.
 
 ## Tips
 
-- **Stuck borderless window?** The three-dot menu is in the top-right. The small × next to it closes the app.
+- **Stuck borderless window?** The three-dot menu is in the top-right. The small × next to it hides that timer (others stay open). The app exits gracefully if you hide your last visible timer; relaunch to bring everything back.
 - **Lost the grip?** Resize the window from the bottom-right corner (a small ◢ marker).
 - **Right-click anywhere** on the clock also opens the settings menu.
+- **Want to permanently remove a timer?** Open its menu → **Delete This Timer**.
+- **Want a new timer?** Open any timer's menu → **New Timer**.
