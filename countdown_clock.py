@@ -1,14 +1,14 @@
 r"""
-Countdown Clock - Windows desktop widget.
+Countdown Clock - Windows desktop widget (multi-timer edition).
 
 Features:
-- Days / hours / minutes countdown to a target date.
-- Settings menu (three-dot button, top-right).
-- Always-on-top toggle.
-- Borderless, drag-to-move, resize grip.
-- Font color + family + size via settings.
-- Persists target + preferences across restarts.
-- Optional "run at Windows startup" toggle.
+- Multiple independent countdown timers, each in its own borderless window.
+- Per-timer settings: target date/time, label, font, colors, geometry, topmost.
+- Add/delete timers from the three-dot menu (right-click also opens menu).
+- Drag-to-move, resize grip, always-on-top toggle, runs at Windows startup.
+- All timers persist in one settings file; closing/deleting one timer never
+  affects the others. App exits only when you choose "Exit App" or you delete
+  the last remaining timer.
 
 Settings file: %APPDATA%\CountdownClock\settings.json
 """
@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-import time
+import uuid
 import tkinter as tk
 from tkinter import colorchooser, font as tkfont, messagebox, ttk
 from datetime import datetime, timedelta, date
@@ -31,32 +31,70 @@ SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 STARTUP_DIR = APPDATA / r"Microsoft\Windows\Start Menu\Programs\Startup"
 STARTUP_SHORTCUT = STARTUP_DIR / f"{APP_NAME}.lnk"
 
-DEFAULT_SETTINGS = {
-    "target": (datetime.now() + timedelta(days=30)).replace(microsecond=0).isoformat(),
+SETTINGS_VERSION = 2
+
+DEFAULT_TIMER = {
+    "id": "",  # filled in at create time
+    "target": "",  # ISO timestamp, filled in at create time
     "font_family": "Segoe UI",
     "font_size": 36,
-    "font_color": "#FFAD46",        # orange by default, for old times' sake
+    "font_color": "#FFAD46",
     "bg_color": "#1a1a1a",
     "always_on_top": True,
-    "geometry": "420x180+200+200",  # WxH+X+Y
+    "geometry": "420x180+200+200",
     "label": "Countdown",
 }
 
 
 # ---------- settings helpers ----------
 
+def _new_timer(offset: int = 0) -> dict:
+    t = DEFAULT_TIMER.copy()
+    t["id"] = uuid.uuid4().hex[:12]
+    t["target"] = (datetime.now() + timedelta(days=30)).replace(microsecond=0).isoformat()
+    # Stagger geometry so multiple new timers don't stack perfectly.
+    x = 200 + (offset * 30)
+    y = 200 + (offset * 30)
+    t["geometry"] = f"420x180+{x}+{y}"
+    return t
+
+
 def load_settings() -> dict:
+    """Load settings, migrating older single-timer format if needed."""
     SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
     if SETTINGS_FILE.exists():
         try:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            merged = DEFAULT_SETTINGS.copy()
-            merged.update(data)
-            return merged
         except Exception:
-            pass
-    return DEFAULT_SETTINGS.copy()
+            data = {}
+    else:
+        data = {}
+
+    # Migration: v1 had top-level "target" instead of "timers".
+    if "timers" not in data:
+        if "target" in data:
+            migrated = DEFAULT_TIMER.copy()
+            migrated.update({k: v for k, v in data.items() if k in DEFAULT_TIMER})
+            migrated["id"] = uuid.uuid4().hex[:12]
+            data = {"version": SETTINGS_VERSION, "timers": [migrated]}
+        else:
+            data = {"version": SETTINGS_VERSION, "timers": [_new_timer()]}
+
+    # Ensure each timer has all expected fields + an id.
+    cleaned = []
+    for i, t in enumerate(data.get("timers", [])):
+        merged = DEFAULT_TIMER.copy()
+        merged.update(t)
+        if not merged.get("id"):
+            merged["id"] = uuid.uuid4().hex[:12]
+        if not merged.get("target"):
+            merged["target"] = (datetime.now() + timedelta(days=30)).replace(microsecond=0).isoformat()
+        cleaned.append(merged)
+    if not cleaned:
+        cleaned = [_new_timer()]
+
+    return {"version": SETTINGS_VERSION, "timers": cleaned}
 
 
 def save_settings(settings: dict) -> None:
@@ -65,15 +103,12 @@ def save_settings(settings: dict) -> None:
         json.dump(settings, f, indent=2)
 
 
-# ---------- startup shortcut (pure stdlib via pythoncom/win32com if available,
-# else fall back to a PowerShell one-liner) ----------
+# ---------- startup shortcut ----------
 
 def _script_target() -> tuple[str, str]:
-    """Return (target_exe, args) for a shortcut pointing at this script."""
     script = os.path.abspath(__file__)
-    if getattr(sys, "frozen", False):  # e.g. PyInstaller
+    if getattr(sys, "frozen", False):
         return sys.executable, ""
-    # Prefer pythonw.exe so no console window flashes.
     pyw = Path(sys.executable).with_name("pythonw.exe")
     exe = str(pyw if pyw.exists() else sys.executable)
     return exe, f'"{script}"'
@@ -113,131 +148,226 @@ def startup_enabled() -> bool:
     return STARTUP_SHORTCUT.exists()
 
 
-# ---------- main app ----------
+# ---------- timer manager (owns hidden root + all timer windows) ----------
 
-class CountdownApp:
-    def __init__(self, root: tk.Tk):
-        self.root = root
+class TimerManager:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.withdraw()  # hidden root; only Toplevels are visible
+        self.root.title(APP_NAME)
         self.settings = load_settings()
+        self.timers: list[TimerWindow] = []
+        for cfg in self.settings["timers"]:
+            self._spawn_window(cfg)
 
-        # Window chrome: borderless + transparent look optional.
-        root.overrideredirect(True)
-        root.attributes("-topmost", self.settings.get("always_on_top", True))
-        root.geometry(self.settings.get("geometry", "420x180+200+200"))
-        root.configure(bg=self.settings.get("bg_color", "#1a1a1a"))
-        root.minsize(260, 120)
+    def _spawn_window(self, cfg: dict) -> "TimerWindow":
+        win = TimerWindow(self, cfg)
+        self.timers.append(win)
+        return win
 
-        # Main frame
-        self.frame = tk.Frame(root, bg=self.settings["bg_color"], bd=0, highlightthickness=0)
+    def add_timer(self):
+        cfg = _new_timer(offset=len(self.timers))
+        self.settings["timers"].append(cfg)
+        self._spawn_window(cfg)
+        self.save()
+
+    def visible_timers(self) -> list["TimerWindow"]:
+        return [t for t in self.timers if not t.hidden]
+
+    def hidden_timers(self) -> list["TimerWindow"]:
+        return [t for t in self.timers if t.hidden]
+
+    def hide_timer(self, win: "TimerWindow"):
+        # If this is the last visible timer, exit the app instead.
+        # Hidden state is in-memory only, so relaunching brings everything back.
+        if len(self.visible_timers()) <= 1:
+            self.exit_app()
+            return
+        win.hide()
+
+    def delete_timer(self, win: "TimerWindow"):
+        if not messagebox.askyesno(
+            APP_NAME,
+            f"Delete timer \"{win.cfg.get('label', 'Countdown')}\"?",
+            parent=win.top,
+        ):
+            return
+        self._remove(win)
+        if not self.timers:
+            self.exit_app()
+
+    def _remove(self, win: "TimerWindow"):
+        try:
+            self.timers.remove(win)
+        except ValueError:
+            pass
+        self.settings["timers"] = [t for t in self.settings["timers"] if t.get("id") != win.cfg.get("id")]
+        try:
+            win.top.destroy()
+        except Exception:
+            pass
+        self.save()
+
+    def save(self):
+        # Snapshot live geometry from each window before persisting.
+        for w in self.timers:
+            try:
+                w.cfg["geometry"] = w.top.geometry()
+            except Exception:
+                pass
+        # Rebuild the timers list in window order (preserve config dicts).
+        self.settings["timers"] = [w.cfg for w in self.timers]
+        save_settings(self.settings)
+
+    def exit_app(self):
+        self.save()
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+    def run(self):
+        self.root.mainloop()
+
+
+# ---------- one timer window ----------
+
+class TimerWindow:
+    def __init__(self, manager: TimerManager, cfg: dict):
+        self.manager = manager
+        self.cfg = cfg
+        top = tk.Toplevel(manager.root)
+        self.top = top
+        top.overrideredirect(True)
+        top.attributes("-topmost", cfg.get("always_on_top", True))
+        top.geometry(cfg.get("geometry", "420x180+200+200"))
+        top.configure(bg=cfg.get("bg_color", "#1a1a1a"))
+        top.minsize(260, 120)
+        top.title(cfg.get("label", "Countdown"))
+
+        bg = cfg["bg_color"]
+
+        self.frame = tk.Frame(top, bg=bg, bd=0, highlightthickness=0)
         self.frame.pack(fill="both", expand=True)
 
-        # Top bar (drag area + label + three dots + close)
-        self.topbar = tk.Frame(self.frame, bg=self.settings["bg_color"], height=24)
+        # Top bar
+        self.topbar = tk.Frame(self.frame, bg=bg, height=24)
         self.topbar.pack(side="top", fill="x")
 
-        self.label_var = tk.StringVar(value=self.settings.get("label", "Countdown"))
+        self.label_var = tk.StringVar(value=cfg.get("label", "Countdown"))
         self.label = tk.Label(
-            self.topbar,
-            textvariable=self.label_var,
-            bg=self.settings["bg_color"],
-            fg="#888",
-            font=("Segoe UI", 9),
-            anchor="w",
-            padx=8,
+            self.topbar, textvariable=self.label_var, bg=bg, fg="#888",
+            font=("Segoe UI", 9), anchor="w", padx=8,
         )
         self.label.pack(side="left", fill="x", expand=True)
 
         self.menu_btn = tk.Label(
-            self.topbar, text="\u22EF", bg=self.settings["bg_color"], fg="#bbb",
+            self.topbar, text="\u22EF", bg=bg, fg="#bbb",
             font=("Segoe UI", 14, "bold"), padx=8, cursor="hand2",
         )
         self.menu_btn.pack(side="right")
         self.menu_btn.bind("<Button-1>", self.open_menu)
 
+        # ✕ hides just this timer (other timers stay open). The timer is not
+        # deleted - reopen it from any other timer's "Show Hidden Timers" menu.
+        # If this is the only visible timer, the app exits and all timers will
+        # return on next launch.
         self.close_btn = tk.Label(
-            self.topbar, text="\u2715", bg=self.settings["bg_color"], fg="#777",
+            self.topbar, text="\u2715", bg=bg, fg="#777",
             font=("Segoe UI", 10, "bold"), padx=8, cursor="hand2",
         )
         self.close_btn.pack(side="right")
-        self.close_btn.bind("<Button-1>", lambda e: self.quit())
+        self.close_btn.bind("<Button-1>", lambda e: self.manager.hide_timer(self))
+        self.hidden = False
 
-        # Countdown display
+        # Display
         self.display = tk.Label(
-            self.frame,
-            text="--",
-            bg=self.settings["bg_color"],
-            fg=self.settings["font_color"],
-            font=(self.settings["font_family"], self.settings["font_size"], "bold"),
+            self.frame, text="--", bg=bg, fg=cfg["font_color"],
+            font=(cfg["font_family"], cfg["font_size"], "bold"),
         )
         self.display.pack(expand=True, fill="both", padx=10, pady=(0, 4))
 
-        # Sub-label (target date readout)
         self.sub = tk.Label(
-            self.frame, text="", bg=self.settings["bg_color"], fg="#666",
-            font=("Segoe UI", 9),
+            self.frame, text="", bg=bg, fg="#666", font=("Segoe UI", 9),
         )
         self.sub.pack(side="bottom", fill="x", pady=(0, 4))
 
-        # Resize grip (bottom-right corner)
+        # Resize grip
         self.grip = tk.Label(
-            self.frame, text="\u25E2", bg=self.settings["bg_color"], fg="#444",
+            self.frame, text="\u25E2", bg=bg, fg="#444",
             font=("Segoe UI", 10), cursor="bottom_right_corner",
         )
         self.grip.place(relx=1.0, rely=1.0, anchor="se")
 
-        # Drag bindings (whole window draggable via topbar + display)
+        # Drag bindings
         for widget in (self.topbar, self.label, self.display, self.sub, self.frame):
             widget.bind("<ButtonPress-1>", self._start_drag)
             widget.bind("<B1-Motion>", self._on_drag)
 
-        # Resize bindings on grip
         self.grip.bind("<ButtonPress-1>", self._start_resize)
         self.grip.bind("<B1-Motion>", self._on_resize)
 
-        # Right-click anywhere = settings
-        root.bind("<Button-3>", self.open_menu)
+        top.bind("<Button-3>", self.open_menu)
+        top.protocol("WM_DELETE_WINDOW", lambda: self.manager.hide_timer(self))
 
-        # Tick
         self._tick()
-        # Save geometry on close
-        root.protocol("WM_DELETE_WINDOW", self.quit)
 
     # ---------- drag / resize ----------
 
     def _start_drag(self, event):
-        self._drag_x = event.x_root - self.root.winfo_x()
-        self._drag_y = event.y_root - self.root.winfo_y()
+        self._drag_x = event.x_root - self.top.winfo_x()
+        self._drag_y = event.y_root - self.top.winfo_y()
 
     def _on_drag(self, event):
         x = event.x_root - self._drag_x
         y = event.y_root - self._drag_y
-        self.root.geometry(f"+{x}+{y}")
+        self.top.geometry(f"+{x}+{y}")
 
     def _start_resize(self, event):
         self._rs_x = event.x_root
         self._rs_y = event.y_root
-        self._rs_w = self.root.winfo_width()
-        self._rs_h = self.root.winfo_height()
+        self._rs_w = self.top.winfo_width()
+        self._rs_h = self.top.winfo_height()
 
     def _on_resize(self, event):
         dw = event.x_root - self._rs_x
         dh = event.y_root - self._rs_y
         w = max(260, self._rs_w + dw)
         h = max(120, self._rs_h + dh)
-        self.root.geometry(f"{w}x{h}")
-        # Scale font proportionally to height.
+        self.top.geometry(f"{w}x{h}")
         size = max(14, int(h * 0.28))
-        self.display.configure(font=(self.settings["font_family"], size, "bold"))
+        self.cfg["font_size"] = size
+        self.display.configure(font=(self.cfg["font_family"], size, "bold"))
 
     # ---------- countdown ----------
 
     def _target_dt(self) -> datetime:
         try:
-            return datetime.fromisoformat(self.settings["target"])
+            return datetime.fromisoformat(self.cfg["target"])
         except Exception:
             return datetime.now() + timedelta(days=30)
 
+    def hide(self):
+        self.hidden = True
+        try:
+            self.top.withdraw()
+        except tk.TclError:
+            pass
+
+    def show(self):
+        self.hidden = False
+        try:
+            self.top.deiconify()
+            # Restore overrideredirect after deiconify (Windows may reset it).
+            self.top.overrideredirect(True)
+            self.top.attributes("-topmost", self.cfg.get("always_on_top", True))
+            self.top.lift()
+        except tk.TclError:
+            pass
+
     def _tick(self):
+        if not self.top.winfo_exists():
+            return
         now = datetime.now()
         target = self._target_dt()
         remaining = target - now
@@ -253,12 +383,12 @@ class CountdownApp:
                 text=f"{days:02d}d {hours:02d}h {mins:02d}m {secs:02d}s"
             )
             self.sub.configure(text=f"Target: {target.strftime('%Y-%m-%d %I:%M %p')}")
-        self.root.after(1000, self._tick)
+        self.top.after(1000, self._tick)
 
-    # ---------- settings menu ----------
+    # ---------- menu ----------
 
     def open_menu(self, event=None):
-        menu = tk.Menu(self.root, tearoff=0)
+        menu = tk.Menu(self.top, tearoff=0)
         menu.add_command(label="Set Target Date/Time...", command=self.set_target)
         menu.add_command(label="Set Label...", command=self.set_label)
         menu.add_separator()
@@ -279,22 +409,30 @@ class CountdownApp:
             command=self.toggle_startup,
         )
         menu.add_separator()
+        menu.add_command(label="New Timer", command=self.manager.add_timer)
+        hidden = self.manager.hidden_timers()
+        if hidden:
+            sub = tk.Menu(menu, tearoff=0)
+            for h in hidden:
+                lbl = h.cfg.get("label") or "Countdown"
+                sub.add_command(label=lbl, command=h.show)
+            menu.add_cascade(label="Show Hidden Timers", menu=sub)
+        menu.add_command(label="Delete This Timer", command=lambda: self.manager.delete_timer(self))
+        menu.add_separator()
         menu.add_command(label="About", command=self.about)
-        menu.add_command(label="Exit", command=self.quit)
+        menu.add_command(label="Exit App", command=self.manager.exit_app)
 
-        # Position near the three-dot button.
         if event and hasattr(event, "x_root"):
             menu.tk_popup(event.x_root, event.y_root)
         else:
-            x = self.root.winfo_rootx() + self.root.winfo_width() - 10
-            y = self.root.winfo_rooty() + 30
+            x = self.top.winfo_rootx() + self.top.winfo_width() - 10
+            y = self.top.winfo_rooty() + 30
             menu.tk_popup(x, y)
 
     def _tk_bool(self, key):
-        # Lazy-create tk.BooleanVar mirroring a settings key.
         attr = f"_var_{key}"
         if not hasattr(self, attr):
-            var = tk.BooleanVar(value=bool(self.settings.get(key, False)))
+            var = tk.BooleanVar(value=bool(self.cfg.get(key, False)))
             setattr(self, attr, var)
         return getattr(self, attr)
 
@@ -307,33 +445,33 @@ class CountdownApp:
     # ---------- setting actions ----------
 
     def set_target(self):
-        # Parse current target into components.
         try:
-            cur = datetime.fromisoformat(self.settings["target"])
+            cur = datetime.fromisoformat(self.cfg["target"])
         except Exception:
             cur = datetime.now() + timedelta(days=30)
 
-        picker = DateTimePicker(self.root, initial=cur)
-        self.root.wait_window(picker.top)
+        picker = DateTimePicker(self.top, initial=cur)
+        self.top.wait_window(picker.top)
         if picker.result is not None:
-            self.settings["target"] = picker.result.replace(microsecond=0).isoformat()
-            save_settings(self.settings)
+            self.cfg["target"] = picker.result.replace(microsecond=0).isoformat()
+            self.manager.save()
 
     def set_label(self):
-        dlg = tk.Toplevel(self.root)
+        dlg = tk.Toplevel(self.top)
         dlg.title("Set Label")
-        dlg.transient(self.root)
+        dlg.transient(self.top)
         dlg.configure(padx=12, pady=12)
         ttk.Label(dlg, text="Label text:").pack(anchor="w")
         entry = ttk.Entry(dlg, width=28)
-        entry.insert(0, self.settings.get("label", ""))
+        entry.insert(0, self.cfg.get("label", ""))
         entry.pack(pady=6)
         entry.focus_set()
 
         def save():
-            self.settings["label"] = entry.get().strip()
-            self.label_var.set(self.settings["label"])
-            save_settings(self.settings)
+            self.cfg["label"] = entry.get().strip()
+            self.label_var.set(self.cfg["label"])
+            self.top.title(self.cfg["label"] or "Countdown")
+            self.manager.save()
             dlg.destroy()
 
         ttk.Button(dlg, text="Save", command=save).pack()
@@ -341,28 +479,26 @@ class CountdownApp:
         dlg.grab_set()
 
     def set_font(self):
-        dlg = tk.Toplevel(self.root)
+        dlg = tk.Toplevel(self.top)
         dlg.title("Font Family & Size")
-        dlg.transient(self.root)
+        dlg.transient(self.top)
         dlg.configure(padx=12, pady=12)
 
         ttk.Label(dlg, text="Font family:").pack(anchor="w")
         families = sorted(set(tkfont.families()))
-        fam_var = tk.StringVar(value=self.settings.get("font_family", "Segoe UI"))
-        combo = ttk.Combobox(dlg, textvariable=fam_var, values=families, width=32)
-        combo.pack(pady=4)
+        fam_var = tk.StringVar(value=self.cfg.get("font_family", "Segoe UI"))
+        ttk.Combobox(dlg, textvariable=fam_var, values=families, width=32).pack(pady=4)
 
         ttk.Label(dlg, text="Font size:").pack(anchor="w")
-        size_var = tk.IntVar(value=self.settings.get("font_size", 36))
-        spin = ttk.Spinbox(dlg, from_=10, to=200, textvariable=size_var, width=8)
-        spin.pack(pady=4)
+        size_var = tk.IntVar(value=self.cfg.get("font_size", 36))
+        ttk.Spinbox(dlg, from_=10, to=200, textvariable=size_var, width=8).pack(pady=4)
 
         def save():
-            self.settings["font_family"] = fam_var.get()
-            self.settings["font_size"] = int(size_var.get())
-            self.display.configure(font=(self.settings["font_family"],
-                                         self.settings["font_size"], "bold"))
-            save_settings(self.settings)
+            self.cfg["font_family"] = fam_var.get()
+            self.cfg["font_size"] = int(size_var.get())
+            self.display.configure(font=(self.cfg["font_family"],
+                                         self.cfg["font_size"], "bold"))
+            self.manager.save()
             dlg.destroy()
 
         ttk.Button(dlg, text="Save", command=save).pack(pady=(6, 0))
@@ -370,42 +506,42 @@ class CountdownApp:
 
     def set_font_color(self):
         _, hexval = colorchooser.askcolor(
-            color=self.settings.get("font_color", "#FFAD46"),
-            title="Pick font color",
+            color=self.cfg.get("font_color", "#FFAD46"),
+            title="Pick font color", parent=self.top,
         )
         if hexval:
-            self.settings["font_color"] = hexval
+            self.cfg["font_color"] = hexval
             self.display.configure(fg=hexval)
-            save_settings(self.settings)
+            self.manager.save()
 
     def set_bg_color(self):
         _, hexval = colorchooser.askcolor(
-            color=self.settings.get("bg_color", "#1a1a1a"),
-            title="Pick background color",
+            color=self.cfg.get("bg_color", "#1a1a1a"),
+            title="Pick background color", parent=self.top,
         )
         if hexval:
-            self.settings["bg_color"] = hexval
-            for widget in (self.root, self.frame, self.topbar, self.label,
+            self.cfg["bg_color"] = hexval
+            for widget in (self.top, self.frame, self.topbar, self.label,
                            self.display, self.sub, self.menu_btn, self.close_btn,
                            self.grip):
                 try:
                     widget.configure(bg=hexval)
                 except tk.TclError:
                     pass
-            save_settings(self.settings)
+            self.manager.save()
 
     def toggle_topmost(self):
         val = self._tk_bool("always_on_top").get()
-        self.settings["always_on_top"] = val
-        self.root.attributes("-topmost", val)
-        save_settings(self.settings)
+        self.cfg["always_on_top"] = val
+        self.top.attributes("-topmost", val)
+        self.manager.save()
 
     def toggle_startup(self):
         want = self._tk_startup.get()
         if want:
             ok = make_shortcut(STARTUP_SHORTCUT)
             if not ok:
-                messagebox.showerror(APP_NAME, "Failed to create startup shortcut.")
+                messagebox.showerror(APP_NAME, "Failed to create startup shortcut.", parent=self.top)
                 self._tk_startup.set(False)
         else:
             remove_shortcut(STARTUP_SHORTCUT)
@@ -415,16 +551,14 @@ class CountdownApp:
             APP_NAME,
             f"{APP_NAME}\n\n"
             f"Settings: {SETTINGS_FILE}\n"
+            f"Active timers: {len(self.manager.timers)}\n"
             f"Startup shortcut: {STARTUP_SHORTCUT if startup_enabled() else '(off)'}\n\n"
-            "Right-click or click the three dots to open settings.",
+            "Right-click or click the three dots for menu.\n"
+            "✕ hides just this timer (others stay open).\n"
+            "Reopen from any other timer's \"Show Hidden Timers\" menu.\n"
+            "Use \"Delete This Timer\" in the menu to remove one permanently.",
+            parent=self.top,
         )
-
-    # ---------- quit ----------
-
-    def quit(self):
-        self.settings["geometry"] = self.root.geometry()
-        save_settings(self.settings)
-        self.root.destroy()
 
 
 # ---------- calendar + time picker ----------
@@ -451,7 +585,6 @@ class DateTimePicker:
         top.resizable(False, False)
         top.configure(padx=12, pady=12)
 
-        # --- Month/year header ---
         hdr = ttk.Frame(top)
         hdr.pack(fill="x", pady=(0, 6))
         ttk.Button(hdr, text="‹", width=3, command=self._prev_month).pack(side="left")
@@ -460,11 +593,9 @@ class DateTimePicker:
         self.title_lbl.pack(side="left", fill="x", expand=True)
         ttk.Button(hdr, text="›", width=3, command=self._next_month).pack(side="left")
 
-        # --- Calendar grid ---
         self.grid_frame = ttk.Frame(top)
         self.grid_frame.pack()
 
-        # --- Time row (12-hour with AM/PM) ---
         time_row = ttk.Frame(top)
         time_row.pack(pady=(10, 0))
         ttk.Label(time_row, text="Time:").pack(side="left")
@@ -486,7 +617,6 @@ class DateTimePicker:
         ttk.Combobox(time_row, textvariable=self.ampm_var, values=("AM", "PM"),
                      width=4, state="readonly").pack(side="left")
 
-        # --- Action buttons ---
         btns = ttk.Frame(top)
         btns.pack(fill="x", pady=(10, 0))
         ttk.Button(btns, text="Today", command=self._jump_today).pack(side="left")
@@ -499,19 +629,17 @@ class DateTimePicker:
         top.bind("<Return>", lambda e: self._ok())
 
     def _render_month(self):
-        # Clear previous grid
         for child in self.grid_frame.winfo_children():
             child.destroy()
         self.title_lbl.configure(
             text=f"{self.MONTHS[self.view_month - 1]} {self.view_year}"
         )
 
-        # Weekday headers
         for col, label in enumerate(self.WEEKDAY_HEADERS):
             ttk.Label(self.grid_frame, text=label, width=4, anchor="center",
                       font=("Segoe UI", 9, "bold")).grid(row=0, column=col, padx=1, pady=(0, 2))
 
-        cal = _calendar.Calendar(firstweekday=6)  # Sunday
+        cal = _calendar.Calendar(firstweekday=6)
         weeks = cal.monthdatescalendar(self.view_year, self.view_month)
         today = date.today()
         for r, week in enumerate(weeks, start=1):
@@ -521,7 +649,6 @@ class DateTimePicker:
                     relief="flat", bd=0,
                     command=lambda d=day: self._select(d),
                 )
-                # Style: dim out-of-month, highlight selected, mark today.
                 if day.month != self.view_month:
                     btn.configure(fg="#888")
                 if day == self.selected:
@@ -532,7 +659,6 @@ class DateTimePicker:
 
     def _select(self, d: date):
         self.selected = d
-        # If the user clicked an adjacent-month date, follow it.
         if d.month != self.view_month or d.year != self.view_year:
             self.view_year, self.view_month = d.year, d.month
         self._render_month()
@@ -565,7 +691,6 @@ class DateTimePicker:
             mi = max(0, min(59, int(self.min_var.get())))
         except (tk.TclError, ValueError):
             h12, mi = 12, 0
-        # Convert 12-hour -> 24-hour.
         is_pm = self.ampm_var.get().upper() == "PM"
         if h12 == 12:
             h24 = 12 if is_pm else 0
@@ -582,10 +707,8 @@ class DateTimePicker:
 
 
 def main():
-    root = tk.Tk()
-    root.title(APP_NAME)
-    CountdownApp(root)
-    root.mainloop()
+    mgr = TimerManager()
+    mgr.run()
 
 
 if __name__ == "__main__":
