@@ -14,6 +14,7 @@ Settings file: %APPDATA%\CountdownClock\settings.json
 """
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import sys
@@ -33,10 +34,41 @@ STARTUP_SHORTCUT = STARTUP_DIR / f"{APP_NAME}.lnk"
 
 SETTINGS_VERSION = 2
 
+# Bundled digital-clock font (DSEG7 Classic Bold, SIL OFL).
+DIGITAL_FONT_FAMILY = "DSEG7 Classic"
+DIGITAL_FONT_FILE = "DSEG7Classic-Bold.ttf"
+
+
+def _resource_path(rel: str) -> Path:
+    """Return absolute path for a bundled resource (works in dev + PyInstaller)."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        return Path(base) / rel
+    return Path(__file__).resolve().parent / rel
+
+
+def load_bundled_fonts() -> None:
+    """Register bundled .ttf files with the Windows GDI for this process only.
+
+    Uses AddFontResourceExW with FR_PRIVATE so the font is usable by Tk in this
+    process without permanently installing it on the system.
+    """
+    if sys.platform != "win32":
+        return
+    font_path = _resource_path(f"fonts/{DIGITAL_FONT_FILE}")
+    if not font_path.exists():
+        return
+    try:
+        FR_PRIVATE = 0x10
+        gdi32 = ctypes.windll.gdi32
+        gdi32.AddFontResourceExW(str(font_path), FR_PRIVATE, 0)
+    except Exception:
+        pass
+
 DEFAULT_TIMER = {
     "id": "",  # filled in at create time
     "target": "",  # ISO timestamp, filled in at create time
-    "font_family": "Segoe UI",
+    "font_family": DIGITAL_FONT_FAMILY,
     "font_size": 36,
     "font_color": "#FFAD46",
     "bg_color": "#1a1a1a",
@@ -94,7 +126,15 @@ def load_settings() -> dict:
     if not cleaned:
         cleaned = [_new_timer()]
 
-    return {"version": SETTINGS_VERSION, "timers": cleaned}
+    # One-shot migration: switch existing timers to the digital font once.
+    out = {"version": SETTINGS_VERSION, "timers": cleaned}
+    if not data.get("digital_font_default_applied"):
+        for t in out["timers"]:
+            t["font_family"] = DIGITAL_FONT_FAMILY
+        out["digital_font_default_applied"] = True
+    else:
+        out["digital_font_default_applied"] = True
+    return out
 
 
 def save_settings(settings: dict) -> None:
@@ -707,6 +747,7 @@ class DateTimePicker:
 
 
 def main():
+    load_bundled_fonts()
     mgr = TimerManager()
     mgr.run()
 
