@@ -18,6 +18,7 @@ import ctypes
 import json
 import os
 import sys
+import threading
 import uuid
 import tkinter as tk
 from tkinter import colorchooser, filedialog, font as tkfont, messagebox, ttk
@@ -121,12 +122,19 @@ def list_builtin_sounds() -> dict[str, list[tuple[str, str]]]:
 
 
 class _AlarmPlayer:
-    """Plays the end-of-timer sound. Uses winsound for .wav, MCI for everything else."""
+    """Plays the end-of-timer sound on loop until stopped.
+
+    Uses winsound for .wav (native loop via SND_LOOP). For mp3/mp4/etc. it
+    drives Windows MCI and re-arms playback with a threading.Timer once each
+    pass through the file finishes.
+    """
 
     _MCI_ALIAS = "cdclock_alarm"
 
     def __init__(self):
         self._mci_active = False
+        self._loop_timer: threading.Timer | None = None
+        self._lock = threading.Lock()
 
     def _mci(self, cmd: str) -> int:
         if sys.platform != "win32":
@@ -136,37 +144,83 @@ class _AlarmPlayer:
         except Exception:
             return -1
 
-    def stop(self):
-        if winsound is not None:
-            try:
-                winsound.PlaySound(None, 0)
-            except Exception:
-                pass
-        if self._mci_active:
-            self._mci(f"close {self._MCI_ALIAS}")
-            self._mci_active = False
+    def _mci_query(self, cmd: str) -> str:
+        if sys.platform != "win32":
+            return ""
+        buf = ctypes.create_unicode_buffer(128)
+        try:
+            ctypes.windll.winmm.mciSendStringW(cmd, buf, 128, 0)
+        except Exception:
+            return ""
+        return buf.value
 
-    def play(self, path: str) -> bool:
-        """Fire-and-forget play of `path`. Returns True if launched."""
+    def stop(self):
+        with self._lock:
+            if self._loop_timer is not None:
+                self._loop_timer.cancel()
+                self._loop_timer = None
+            if winsound is not None:
+                try:
+                    winsound.PlaySound(None, 0)
+                except Exception:
+                    pass
+            if self._mci_active:
+                self._mci(f"close {self._MCI_ALIAS}")
+                self._mci_active = False
+
+    def _schedule_mci_restart(self, length_ms: int):
+        # Slight gap so MCI fully resets before the next pass.
+        delay = max(0.2, length_ms / 1000.0)
+        t = threading.Timer(delay, self._mci_restart)
+        t.daemon = True
+        with self._lock:
+            self._loop_timer = t
+        t.start()
+
+    def _mci_restart(self):
+        with self._lock:
+            if not self._mci_active:
+                return
+        # Seek to start + play again, then schedule the next restart.
+        self._mci(f"seek {self._MCI_ALIAS} to start")
+        self._mci(f"play {self._MCI_ALIAS}")
+        try:
+            length_ms = int(self._mci_query(f"status {self._MCI_ALIAS} length") or "0")
+        except ValueError:
+            length_ms = 0
+        if length_ms > 0:
+            self._schedule_mci_restart(length_ms)
+
+    def play(self, path: str, *, loop: bool = True) -> bool:
+        """Fire-and-forget play of `path`. Loops until stop() unless loop=False."""
         self.stop()
         if not path or not os.path.exists(path):
             return False
         ext = os.path.splitext(path)[1].lower()
         if ext == ".wav" and winsound is not None:
+            flags = winsound.SND_FILENAME | winsound.SND_ASYNC
+            if loop:
+                flags |= winsound.SND_LOOP
             try:
-                winsound.PlaySound(
-                    path, winsound.SND_FILENAME | winsound.SND_ASYNC,
-                )
+                winsound.PlaySound(path, flags)
                 return True
             except Exception:
                 pass
-        # MCI handles mp3 / mp4 / m4a / aac / wma / wav.
+        # MCI path - handles mp3/mp4/m4a/aac/wma/wav.
         self._mci(f"close {self._MCI_ALIAS}")
         if self._mci(f'open "{path}" alias {self._MCI_ALIAS}') != 0:
             return False
         if self._mci(f"play {self._MCI_ALIAS}") != 0:
             return False
-        self._mci_active = True
+        with self._lock:
+            self._mci_active = True
+        if loop:
+            try:
+                length_ms = int(self._mci_query(f"status {self._MCI_ALIAS} length") or "0")
+            except ValueError:
+                length_ms = 0
+            if length_ms > 0:
+                self._schedule_mci_restart(length_ms)
         return True
 
 
@@ -672,12 +726,14 @@ class TimerWindow:
     def _fire_alarm(self):
         path = resolve_alarm_path(self.cfg.get("alarm") or {})
         if path:
-            ALARM_PLAYER.play(path)
-        # Pop a non-modal toast so the user can see which timer fired and stop the sound.
+            ALARM_PLAYER.play(path, loop=True)
+        # Modal popup that doubles as a Stop button - dismissing it stops the loop.
+        # Other timers' menus can also stop the sound via "Stop sound".
         try:
             label = self.cfg.get("label") or "Countdown"
             messagebox.showinfo(
-                APP_NAME, f"\u23f0  {label}\n\nTarget reached.",
+                APP_NAME,
+                f"\u23f0  {label}\n\nTarget reached.\n\nClose this window to stop the alarm.",
                 parent=self.top,
             )
         finally:
@@ -944,7 +1000,8 @@ class TimerWindow:
         if not path:
             messagebox.showinfo(APP_NAME, "No sound selected (or file missing).", parent=self.top)
             return
-        ALARM_PLAYER.play(path)
+        # Test plays once (no loop) - the real alarm loops until dismissed.
+        ALARM_PLAYER.play(path, loop=False)
 
     def about(self):
         messagebox.showinfo(
