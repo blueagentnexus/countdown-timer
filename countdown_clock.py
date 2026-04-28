@@ -20,10 +20,15 @@ import os
 import sys
 import uuid
 import tkinter as tk
-from tkinter import colorchooser, font as tkfont, messagebox, ttk
+from tkinter import colorchooser, filedialog, font as tkfont, messagebox, ttk
 from datetime import datetime, timedelta, date
 import calendar as _calendar
 from pathlib import Path
+
+try:
+    import winsound  # stdlib on Windows; only used for .wav playback
+except ImportError:
+    winsound = None
 
 APP_NAME = "CountdownClock"
 APPDATA = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
@@ -68,6 +73,123 @@ def load_bundled_fonts() -> None:
 MODERN_DEFAULT_FONT = "Segoe UI"
 UNIT_LABELS = ("DAY(S)", "HOUR(S)", "MINUTE(S)", "SECOND(S)")
 
+WINDOWS_MEDIA = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "Media"
+
+# Pretty names for the built-in Windows alarms so menus read better.
+BUILTIN_PRETTY = {
+    "Alarm01.wav": "Alarm 1 (Cyber)",
+    "Alarm02.wav": "Alarm 2 (Pulse)",
+    "Alarm03.wav": "Alarm 3 (Beep)",
+    "Alarm04.wav": "Alarm 4 (Chord)",
+    "Alarm05.wav": "Alarm 5 (Trill)",
+    "Alarm06.wav": "Alarm 6 (Sonar)",
+    "Alarm07.wav": "Alarm 7 (Ascend)",
+    "Alarm08.wav": "Alarm 8 (Loud)",
+    "Alarm09.wav": "Alarm 9 (Buzzer)",
+    "Alarm10.wav": "Alarm 10 (Wake)",
+    "Ring01.wav": "Ring 1", "Ring02.wav": "Ring 2", "Ring03.wav": "Ring 3",
+    "Ring04.wav": "Ring 4", "Ring05.wav": "Ring 5", "Ring06.wav": "Ring 6",
+    "Ring07.wav": "Ring 7", "Ring08.wav": "Ring 8", "Ring09.wav": "Ring 9",
+    "Ring10.wav": "Ring 10",
+    "chimes.wav": "Chimes", "chord.wav": "Chord", "ding.wav": "Ding",
+    "notify.wav": "Notify", "tada.wav": "Tada", "ringout.wav": "Ring Out",
+    "recycle.wav": "Recycle",
+}
+
+
+def list_builtin_sounds() -> dict[str, list[tuple[str, str]]]:
+    """Return {category: [(pretty_name, filename), ...]} of available system sounds.
+
+    Skips Windows housekeeping sounds (Critical Stop etc.) so the menu doesn't
+    feel like Control Panel.
+    """
+    if not WINDOWS_MEDIA.exists():
+        return {}
+    files = sorted(p.name for p in WINDOWS_MEDIA.glob("*.wav"))
+    cats: dict[str, list[tuple[str, str]]] = {
+        "Alarms": [], "Rings": [], "Chimes & Tones": [],
+    }
+    for fname in files:
+        if fname.startswith("Alarm") and fname.endswith(".wav"):
+            cats["Alarms"].append((BUILTIN_PRETTY.get(fname, fname), fname))
+        elif fname.startswith("Ring") and fname not in ("ringout.wav",):
+            cats["Rings"].append((BUILTIN_PRETTY.get(fname, fname), fname))
+        elif fname in ("chimes.wav", "chord.wav", "ding.wav", "notify.wav",
+                       "tada.wav", "ringout.wav", "recycle.wav"):
+            cats["Chimes & Tones"].append((BUILTIN_PRETTY.get(fname, fname), fname))
+    return {k: v for k, v in cats.items() if v}
+
+
+class _AlarmPlayer:
+    """Plays the end-of-timer sound. Uses winsound for .wav, MCI for everything else."""
+
+    _MCI_ALIAS = "cdclock_alarm"
+
+    def __init__(self):
+        self._mci_active = False
+
+    def _mci(self, cmd: str) -> int:
+        if sys.platform != "win32":
+            return 0
+        try:
+            return ctypes.windll.winmm.mciSendStringW(cmd, None, 0, 0)
+        except Exception:
+            return -1
+
+    def stop(self):
+        if winsound is not None:
+            try:
+                winsound.PlaySound(None, 0)
+            except Exception:
+                pass
+        if self._mci_active:
+            self._mci(f"close {self._MCI_ALIAS}")
+            self._mci_active = False
+
+    def play(self, path: str) -> bool:
+        """Fire-and-forget play of `path`. Returns True if launched."""
+        self.stop()
+        if not path or not os.path.exists(path):
+            return False
+        ext = os.path.splitext(path)[1].lower()
+        if ext == ".wav" and winsound is not None:
+            try:
+                winsound.PlaySound(
+                    path, winsound.SND_FILENAME | winsound.SND_ASYNC,
+                )
+                return True
+            except Exception:
+                pass
+        # MCI handles mp3 / mp4 / m4a / aac / wma / wav.
+        self._mci(f"close {self._MCI_ALIAS}")
+        if self._mci(f'open "{path}" alias {self._MCI_ALIAS}') != 0:
+            return False
+        if self._mci(f"play {self._MCI_ALIAS}") != 0:
+            return False
+        self._mci_active = True
+        return True
+
+
+ALARM_PLAYER = _AlarmPlayer()
+
+
+def resolve_alarm_path(alarm: dict) -> str | None:
+    """Translate an alarm config dict to an absolute file path (or None)."""
+    if not alarm:
+        return None
+    kind = alarm.get("kind", "none")
+    if kind == "none":
+        return None
+    if kind == "builtin":
+        name = alarm.get("name") or ""
+        path = WINDOWS_MEDIA / name
+        return str(path) if path.exists() else None
+    if kind == "custom":
+        path = alarm.get("path") or ""
+        return path if path and os.path.exists(path) else None
+    return None
+
+
 DEFAULT_TIMER = {
     "id": "",  # filled in at create time
     "target": "",  # ISO timestamp, filled in at create time
@@ -79,6 +201,7 @@ DEFAULT_TIMER = {
     "always_on_top": True,
     "geometry": "420x180+200+200",
     "label": "Countdown",
+    "alarm": {"kind": "builtin", "name": "Alarm03.wav", "path": ""},
 }
 
 
@@ -360,6 +483,7 @@ class TimerWindow:
 
         # All chrome widgets exist now - safe to populate the display container.
         self._rebuild_display()
+        self._alarm_fired = False  # reset whenever target changes (see set_target)
         self._tick()
 
     # ---------- drag / resize ----------
@@ -533,6 +657,9 @@ class TimerWindow:
         if remaining.total_seconds() <= 0:
             d = h = m = s = 0
             self.sub.configure(text=f"Target reached: {target.strftime('%Y-%m-%d %I:%M %p')}")
+            if not self._alarm_fired:
+                self._alarm_fired = True
+                self._fire_alarm()
         else:
             total_sec = int(remaining.total_seconds())
             d, rem = divmod(total_sec, 86400)
@@ -541,6 +668,20 @@ class TimerWindow:
             self.sub.configure(text=f"Target: {target.strftime('%Y-%m-%d %I:%M %p')}")
         self._render_numbers(d, h, m, s)
         self.top.after(1000, self._tick)
+
+    def _fire_alarm(self):
+        path = resolve_alarm_path(self.cfg.get("alarm") or {})
+        if path:
+            ALARM_PLAYER.play(path)
+        # Pop a non-modal toast so the user can see which timer fired and stop the sound.
+        try:
+            label = self.cfg.get("label") or "Countdown"
+            messagebox.showinfo(
+                APP_NAME, f"\u23f0  {label}\n\nTarget reached.",
+                parent=self.top,
+            )
+        finally:
+            ALARM_PLAYER.stop()
 
     def _render_numbers(self, d: int, h: int, m: int, s: int):
         if self.cfg.get("style") == "modern":
@@ -587,6 +728,8 @@ class TimerWindow:
             variable=self._tk_startup,
             command=self.toggle_startup,
         )
+        menu.add_separator()
+        menu.add_cascade(label="End-of-Timer Sound", menu=self._build_alarm_menu(menu))
         menu.add_separator()
         menu.add_command(label="New Timer", command=self.manager.add_timer)
         hidden = self.manager.hidden_timers()
@@ -657,6 +800,7 @@ class TimerWindow:
         self.top.wait_window(picker.top)
         if picker.result is not None:
             self.cfg["target"] = picker.result.replace(microsecond=0).isoformat()
+            self._alarm_fired = False  # arm alarm for the new target
             self.manager.save()
 
     def set_label(self):
@@ -741,6 +885,66 @@ class TimerWindow:
                 self._tk_startup.set(False)
         else:
             remove_shortcut(STARTUP_SHORTCUT)
+
+    def _alarm_match(self, kind: str, name: str = "") -> bool:
+        cur = self.cfg.get("alarm") or {}
+        if cur.get("kind") != kind:
+            return False
+        if kind == "builtin":
+            return cur.get("name") == name
+        return True
+
+    def _build_alarm_menu(self, parent_menu: tk.Menu) -> tk.Menu:
+        m = tk.Menu(parent_menu, tearoff=0)
+        # Active state in the label so users see what's selected at a glance.
+        cur = self.cfg.get("alarm") or {}
+        m.add_command(
+            label=("• None" if cur.get("kind") == "none" else "  None"),
+            command=lambda: self.set_alarm({"kind": "none", "name": "", "path": ""}),
+        )
+        m.add_command(label="  Test current sound", command=self.test_alarm)
+        m.add_command(label="  Stop sound", command=lambda: ALARM_PLAYER.stop())
+        m.add_separator()
+        for cat, items in list_builtin_sounds().items():
+            sub = tk.Menu(m, tearoff=0)
+            for pretty, fname in items:
+                marker = "• " if self._alarm_match("builtin", fname) else "  "
+                sub.add_command(
+                    label=marker + pretty,
+                    command=lambda fn=fname: self.set_alarm({
+                        "kind": "builtin", "name": fn, "path": "",
+                    }),
+                )
+            m.add_cascade(label=cat, menu=sub)
+        m.add_separator()
+        custom_label = "  Custom file..."
+        if cur.get("kind") == "custom" and cur.get("path"):
+            custom_label = f"• Custom: {os.path.basename(cur['path'])}"
+        m.add_command(label=custom_label, command=self.set_alarm_custom)
+        return m
+
+    def set_alarm(self, alarm: dict):
+        self.cfg["alarm"] = alarm
+        self.manager.save()
+
+    def set_alarm_custom(self):
+        path = filedialog.askopenfilename(
+            parent=self.top,
+            title="Pick alarm sound",
+            filetypes=[
+                ("Audio / video", "*.wav *.mp3 *.mp4 *.m4a *.aac *.wma *.flac *.ogg *.avi *.wmv *.mov"),
+                ("All files", "*.*"),
+            ],
+        )
+        if path:
+            self.set_alarm({"kind": "custom", "name": "", "path": path})
+
+    def test_alarm(self):
+        path = resolve_alarm_path(self.cfg.get("alarm") or {})
+        if not path:
+            messagebox.showinfo(APP_NAME, "No sound selected (or file missing).", parent=self.top)
+            return
+        ALARM_PLAYER.play(path)
 
     def about(self):
         messagebox.showinfo(
