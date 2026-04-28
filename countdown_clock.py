@@ -65,9 +65,13 @@ def load_bundled_fonts() -> None:
     except Exception:
         pass
 
+MODERN_DEFAULT_FONT = "Segoe UI"
+UNIT_LABELS = ("DAY(S)", "HOUR(S)", "MINUTE(S)", "SECOND(S)")
+
 DEFAULT_TIMER = {
     "id": "",  # filled in at create time
     "target": "",  # ISO timestamp, filled in at create time
+    "style": "digital",  # "digital" or "modern"
     "font_family": DIGITAL_FONT_FAMILY,
     "font_size": 36,
     "font_color": "#FFAD46",
@@ -320,12 +324,16 @@ class TimerWindow:
         self.close_btn.bind("<Button-1>", lambda e: self.manager.hide_timer(self))
         self.hidden = False
 
-        # Display
-        self.display = tk.Label(
-            self.frame, text="--", bg=bg, fg=cfg["font_color"],
-            font=(cfg["font_family"], cfg["font_size"], "bold"),
-        )
+        # Display container - holds either the digital single-label layout or
+        # the modern multi-column (numbers + colons + unit labels) layout.
+        # Built empty here; populated at the end of __init__ once self.sub /
+        # self.grip exist (so _apply_bg can walk every chrome widget).
+        self.display = tk.Frame(self.frame, bg=bg, bd=0, highlightthickness=0)
         self.display.pack(expand=True, fill="both", padx=10, pady=(0, 4))
+        self._digital_label = None
+        self._modern_nums: list[tk.Label] = []
+        self._modern_units: list[tk.Label] = []
+        self._modern_colons: list[tk.Label] = []
 
         self.sub = tk.Label(
             self.frame, text="", bg=bg, fg="#666", font=("Segoe UI", 9),
@@ -339,7 +347,7 @@ class TimerWindow:
         )
         self.grip.place(relx=1.0, rely=1.0, anchor="se")
 
-        # Drag bindings
+        # Drag bindings (display children get their bindings inside _rebuild_display)
         for widget in (self.topbar, self.label, self.display, self.sub, self.frame):
             widget.bind("<ButtonPress-1>", self._start_drag)
             widget.bind("<B1-Motion>", self._on_drag)
@@ -350,6 +358,8 @@ class TimerWindow:
         top.bind("<Button-3>", self.open_menu)
         top.protocol("WM_DELETE_WINDOW", lambda: self.manager.hide_timer(self))
 
+        # All chrome widgets exist now - safe to populate the display container.
+        self._rebuild_display()
         self._tick()
 
     # ---------- drag / resize ----------
@@ -375,9 +385,118 @@ class TimerWindow:
         w = max(260, self._rs_w + dw)
         h = max(120, self._rs_h + dh)
         self.top.geometry(f"{w}x{h}")
-        size = max(14, int(h * 0.28))
+        if self.cfg.get("style") == "modern":
+            size = max(14, int(h * 0.34))
+        else:
+            size = max(14, int(h * 0.28))
         self.cfg["font_size"] = size
-        self.display.configure(font=(self.cfg["font_family"], size, "bold"))
+        self._apply_font()
+
+    # ---------- display layout (digital vs modern) ----------
+
+    def _rebuild_display(self):
+        for child in self.display.winfo_children():
+            child.destroy()
+        self._digital_label = None
+        self._modern_nums = []
+        self._modern_units = []
+        self._modern_colons = []
+        if self.cfg.get("style") == "modern":
+            self._build_modern_inside()
+        else:
+            self._build_digital_inside()
+        self._apply_bg(self.cfg["bg_color"])
+
+    def _build_digital_inside(self):
+        cfg = self.cfg
+        lbl = tk.Label(
+            self.display, text="--",
+            bg=cfg["bg_color"], fg=cfg["font_color"],
+            font=(cfg["font_family"], cfg["font_size"], "bold"),
+        )
+        lbl.pack(expand=True, fill="both")
+        lbl.bind("<ButtonPress-1>", self._start_drag)
+        lbl.bind("<B1-Motion>", self._on_drag)
+        lbl.bind("<Button-3>", self.open_menu)
+        self._digital_label = lbl
+
+    def _build_modern_inside(self):
+        cfg = self.cfg
+        bg = cfg["bg_color"]
+        fg = cfg["font_color"]
+        fam = cfg["font_family"]
+        size = cfg["font_size"]
+        unit_size = max(7, int(size * 0.25))
+
+        holder = tk.Frame(self.display, bg=bg)
+        holder.pack(expand=True, fill="both")
+        # 7 columns: num, colon, num, colon, num, colon, num
+        num_cols = (0, 2, 4, 6)
+        colon_cols = (1, 3, 5)
+        for c in num_cols:
+            holder.grid_columnconfigure(c, weight=1)
+        for c in colon_cols:
+            holder.grid_columnconfigure(c, weight=0)
+        holder.grid_rowconfigure(0, weight=3)
+        holder.grid_rowconfigure(1, weight=1)
+
+        for i, unit in enumerate(UNIT_LABELS):
+            col = num_cols[i]
+            num = tk.Label(holder, text="00", bg=bg, fg=fg,
+                           font=(fam, size, "bold"))
+            num.grid(row=0, column=col, sticky="ew", padx=2)
+            u = tk.Label(holder, text=unit, bg=bg, fg=fg,
+                         font=("Segoe UI", unit_size, "bold"))
+            u.grid(row=1, column=col, sticky="new", padx=2)
+            self._modern_nums.append(num)
+            self._modern_units.append(u)
+        for ci in colon_cols:
+            colon = tk.Label(holder, text=":", bg=bg, fg=fg,
+                             font=(fam, size, "bold"))
+            colon.grid(row=0, column=ci, sticky="ns")
+            self._modern_colons.append(colon)
+
+        for w in (holder, *self._modern_nums, *self._modern_units, *self._modern_colons):
+            w.bind("<ButtonPress-1>", self._start_drag)
+            w.bind("<B1-Motion>", self._on_drag)
+            w.bind("<Button-3>", self.open_menu)
+
+    def _apply_font(self):
+        cfg = self.cfg
+        fam = cfg["font_family"]
+        size = cfg["font_size"]
+        if cfg.get("style") == "modern":
+            unit_size = max(7, int(size * 0.25))
+            for w in self._modern_nums + self._modern_colons:
+                w.configure(font=(fam, size, "bold"))
+            for w in self._modern_units:
+                w.configure(font=("Segoe UI", unit_size, "bold"))
+        elif self._digital_label is not None:
+            self._digital_label.configure(font=(fam, size, "bold"))
+
+    def _apply_fg(self, color: str):
+        if self.cfg.get("style") == "modern":
+            for w in self._modern_nums + self._modern_units + self._modern_colons:
+                w.configure(fg=color)
+        elif self._digital_label is not None:
+            self._digital_label.configure(fg=color)
+
+    def _apply_bg(self, color: str):
+        for w in (self.top, self.frame, self.topbar, self.label, self.display,
+                  self.sub, self.menu_btn, self.close_btn, self.grip):
+            try:
+                w.configure(bg=color)
+            except tk.TclError:
+                pass
+        # Walk display children for the modern layout's nested frames + labels.
+        def _walk(parent):
+            for child in parent.winfo_children():
+                try:
+                    child.configure(bg=color)
+                except tk.TclError:
+                    pass
+                _walk(child)
+        _walk(self.display)
 
     # ---------- countdown ----------
 
@@ -412,18 +531,28 @@ class TimerWindow:
         target = self._target_dt()
         remaining = target - now
         if remaining.total_seconds() <= 0:
-            self.display.configure(text="00d 00h 00m 00s")
+            d = h = m = s = 0
             self.sub.configure(text=f"Target reached: {target.strftime('%Y-%m-%d %I:%M %p')}")
         else:
             total_sec = int(remaining.total_seconds())
-            days, rem = divmod(total_sec, 86400)
-            hours, rem = divmod(rem, 3600)
-            mins, secs = divmod(rem, 60)
-            self.display.configure(
-                text=f"{days:02d}d {hours:02d}h {mins:02d}m {secs:02d}s"
-            )
+            d, rem = divmod(total_sec, 86400)
+            h, rem = divmod(rem, 3600)
+            m, s = divmod(rem, 60)
             self.sub.configure(text=f"Target: {target.strftime('%Y-%m-%d %I:%M %p')}")
+        self._render_numbers(d, h, m, s)
         self.top.after(1000, self._tick)
+
+    def _render_numbers(self, d: int, h: int, m: int, s: int):
+        if self.cfg.get("style") == "modern":
+            if len(self._modern_nums) == 4:
+                self._modern_nums[0].configure(text=f"{d:03d}")
+                self._modern_nums[1].configure(text=f"{h:02d}")
+                self._modern_nums[2].configure(text=f"{m:02d}")
+                self._modern_nums[3].configure(text=f"{s:02d}")
+        elif self._digital_label is not None:
+            self._digital_label.configure(
+                text=f"{d:02d}d {h:02d}h {m:02d}m {s:02d}s"
+            )
 
     # ---------- menu ----------
 
@@ -432,6 +561,16 @@ class TimerWindow:
         menu.add_command(label="Set Target Date/Time...", command=self.set_target)
         menu.add_command(label="Set Label...", command=self.set_label)
         menu.add_separator()
+        style_menu = tk.Menu(menu, tearoff=0)
+        style_menu.add_radiobutton(
+            label="Digital (7-segment)", value="digital",
+            variable=self._tk_style, command=lambda: self.set_style("digital"),
+        )
+        style_menu.add_radiobutton(
+            label="Modern (numbers + labels)", value="modern",
+            variable=self._tk_style, command=lambda: self.set_style("modern"),
+        )
+        menu.add_cascade(label="Style", menu=style_menu)
         menu.add_command(label="Font Family & Size...", command=self.set_font)
         menu.add_command(label="Font Color...", command=self.set_font_color)
         menu.add_command(label="Background Color...", command=self.set_bg_color)
@@ -475,6 +614,30 @@ class TimerWindow:
             var = tk.BooleanVar(value=bool(self.cfg.get(key, False)))
             setattr(self, attr, var)
         return getattr(self, attr)
+
+    @property
+    def _tk_style(self):
+        if not hasattr(self, "_var_style"):
+            self._var_style = tk.StringVar(value=self.cfg.get("style", "digital"))
+        return self._var_style
+
+    def set_style(self, style: str):
+        if style not in ("digital", "modern"):
+            return
+        prev = self.cfg.get("style", "digital")
+        if style == prev:
+            return
+        # Auto-switch font to a sensible default for the new style if the user
+        # hasn't actively chosen a custom one.
+        if style == "modern" and self.cfg.get("font_family") == DIGITAL_FONT_FAMILY:
+            self.cfg["font_family"] = MODERN_DEFAULT_FONT
+        elif style == "digital" and self.cfg.get("font_family") == MODERN_DEFAULT_FONT:
+            self.cfg["font_family"] = DIGITAL_FONT_FAMILY
+        self.cfg["style"] = style
+        self._tk_style.set(style)
+        self._rebuild_display()
+        self._render_numbers(0, 0, 0, 0)  # immediate refresh until next tick
+        self.manager.save()
 
     @property
     def _tk_startup(self):
@@ -536,8 +699,7 @@ class TimerWindow:
         def save():
             self.cfg["font_family"] = fam_var.get()
             self.cfg["font_size"] = int(size_var.get())
-            self.display.configure(font=(self.cfg["font_family"],
-                                         self.cfg["font_size"], "bold"))
+            self._apply_font()
             self.manager.save()
             dlg.destroy()
 
@@ -551,7 +713,7 @@ class TimerWindow:
         )
         if hexval:
             self.cfg["font_color"] = hexval
-            self.display.configure(fg=hexval)
+            self._apply_fg(hexval)
             self.manager.save()
 
     def set_bg_color(self):
@@ -561,13 +723,7 @@ class TimerWindow:
         )
         if hexval:
             self.cfg["bg_color"] = hexval
-            for widget in (self.top, self.frame, self.topbar, self.label,
-                           self.display, self.sub, self.menu_btn, self.close_btn,
-                           self.grip):
-                try:
-                    widget.configure(bg=hexval)
-                except tk.TclError:
-                    pass
+            self._apply_bg(hexval)
             self.manager.save()
 
     def toggle_topmost(self):
