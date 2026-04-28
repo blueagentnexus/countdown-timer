@@ -32,6 +32,8 @@ except ImportError:
     winsound = None
 
 APP_NAME = "CountdownClock"
+APP_VERSION = "1.6.0"
+APP_COPYRIGHT = "© 2026 Chris Gonzales. All rights reserved."
 APPDATA = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
 SETTINGS_DIR = APPDATA / APP_NAME
 SETTINGS_FILE = SETTINGS_DIR / "settings.json"
@@ -1001,8 +1003,10 @@ class TimerWindow:
 
     def about(self):
         messagebox.showinfo(
-            APP_NAME,
-            f"{APP_NAME}\n\n"
+            f"About {APP_NAME}",
+            f"{APP_NAME}\n"
+            f"Version {APP_VERSION}\n"
+            f"{APP_COPYRIGHT}\n\n"
             f"Settings: {SETTINGS_FILE}\n"
             f"Active timers: {len(self.manager.timers)}\n"
             f"Startup shortcut: {STARTUP_SHORTCUT if startup_enabled() else '(off)'}\n\n"
@@ -1062,13 +1066,26 @@ class DateTimePicker:
         self.min_var = tk.IntVar(value=initial.minute)
         self.ampm_var = tk.StringVar(value="PM" if is_pm else "AM")
 
-        ttk.Spinbox(time_row, from_=1, to=12, width=4, textvariable=self.hour_var,
-                    format="%02.0f").pack(side="left", padx=(6, 2))
+        # Note: we keep widget refs so _ok() can read the live displayed values.
+        # ttk.Spinbox + IntVar + format don't commit typed text into the IntVar
+        # until focus-out, which caused stale-value bugs (e.g. picking 9 AM but
+        # getting 12 AM if the user clicked OK without tabbing first).
+        self.hour_spin = ttk.Spinbox(
+            time_row, from_=1, to=12, width=4, textvariable=self.hour_var,
+            format="%02.0f",
+        )
+        self.hour_spin.pack(side="left", padx=(6, 2))
         ttk.Label(time_row, text=":").pack(side="left")
-        ttk.Spinbox(time_row, from_=0, to=59, width=4, textvariable=self.min_var,
-                    format="%02.0f").pack(side="left", padx=(2, 6))
-        ttk.Combobox(time_row, textvariable=self.ampm_var, values=("AM", "PM"),
-                     width=4, state="readonly").pack(side="left")
+        self.min_spin = ttk.Spinbox(
+            time_row, from_=0, to=59, width=4, textvariable=self.min_var,
+            format="%02.0f",
+        )
+        self.min_spin.pack(side="left", padx=(2, 6))
+        self.ampm_combo = ttk.Combobox(
+            time_row, textvariable=self.ampm_var, values=("AM", "PM"),
+            width=4, state="readonly",
+        )
+        self.ampm_combo.pack(side="left")
 
         btns = ttk.Frame(top)
         btns.pack(fill="x", pady=(10, 0))
@@ -1105,7 +1122,7 @@ class DateTimePicker:
                 if day.month != self.view_month:
                     btn.configure(fg="#888")
                 if day == self.selected:
-                    btn.configure(bg="#FFAD46", fg="#000", activebackground="#FFAD46")
+                    btn.configure(bg="#16A766", fg="#fff", activebackground="#16A766")
                 elif day == today:
                     btn.configure(bg="#333", fg="#fff", activebackground="#555")
                 btn.grid(row=r, column=c, padx=1, pady=1, sticky="nsew")
@@ -1139,11 +1156,31 @@ class DateTimePicker:
         self._render_month()
 
     def _ok(self):
+        # Read directly from the Spinbox widgets (not just the IntVars) so that
+        # any value the user typed but didn't commit with Tab/Enter is still
+        # captured. The widget's .get() always returns the live displayed text.
         try:
-            h12 = max(1, min(12, int(self.hour_var.get())))
-            mi = max(0, min(59, int(self.min_var.get())))
-        except (tk.TclError, ValueError):
-            h12, mi = 12, 0
+            h_text = self.hour_spin.get()
+        except Exception:
+            h_text = str(self.hour_var.get())
+        try:
+            m_text = self.min_spin.get()
+        except Exception:
+            m_text = str(self.min_var.get())
+        try:
+            h12 = max(1, min(12, int(h_text)))
+        except (TypeError, ValueError):
+            try:
+                h12 = max(1, min(12, int(self.hour_var.get())))
+            except (tk.TclError, ValueError):
+                h12 = 12
+        try:
+            mi = max(0, min(59, int(m_text)))
+        except (TypeError, ValueError):
+            try:
+                mi = max(0, min(59, int(self.min_var.get())))
+            except (tk.TclError, ValueError):
+                mi = 0
         is_pm = self.ampm_var.get().upper() == "PM"
         if h12 == 12:
             h24 = 12 if is_pm else 0
