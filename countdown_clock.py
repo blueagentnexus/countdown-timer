@@ -247,13 +247,13 @@ def resolve_alarm_path(alarm: dict) -> str | None:
 DEFAULT_TIMER = {
     "id": "",  # filled in at create time
     "target": "",  # ISO timestamp, filled in at create time
-    "style": "digital",  # "digital" or "modern"
+    "style": "modern",  # "digital" or "modern"
     "font_family": DIGITAL_FONT_FAMILY,
-    "font_size": 36,
-    "font_color": "#FFAD46",
+    "font_size": 54,
+    "font_color": "#FF0000",
     "bg_color": "#1a1a1a",
     "always_on_top": True,
-    "geometry": "420x180+200+200",
+    "geometry": "560x200+200+200",
     "label": "Countdown",
     "alarm": {"kind": "builtin", "name": "Alarm03.wav", "path": ""},
 }
@@ -826,12 +826,8 @@ class TimerWindow:
         prev = self.cfg.get("style", "digital")
         if style == prev:
             return
-        # Auto-switch font to a sensible default for the new style if the user
-        # hasn't actively chosen a custom one.
-        if style == "modern" and self.cfg.get("font_family") == DIGITAL_FONT_FAMILY:
-            self.cfg["font_family"] = MODERN_DEFAULT_FONT
-        elif style == "digital" and self.cfg.get("font_family") == MODERN_DEFAULT_FONT:
-            self.cfg["font_family"] = DIGITAL_FONT_FAMILY
+        # Keep the user's font choice sticky across style switches. Use the
+        # Font Family & Size menu to change the font explicitly.
         self.cfg["style"] = style
         self._tk_style.set(style)
         self._rebuild_display()
