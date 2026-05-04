@@ -32,7 +32,7 @@ except ImportError:
     winsound = None
 
 APP_NAME = "CountdownClock"
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 APP_COPYRIGHT = "© 2026 Chris Gonzales. All rights reserved."
 APPDATA = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
 SETTINGS_DIR = APPDATA / APP_NAME
@@ -249,6 +249,9 @@ def resolve_alarm_path(alarm: dict) -> str | None:
 DEFAULT_TIMER = {
     "id": "",  # filled in at create time
     "target": "",  # ISO timestamp, filled in at create time
+    "mode": "target",  # "target" or "duration"
+    "duration": 600,  # default 10 mins if mode is duration
+    "start_time": "", # filled in when duration starts
     "style": "modern",  # "digital" or "modern"
     "font_family": DIGITAL_FONT_FAMILY,
     "font_size": 54,
@@ -468,6 +471,10 @@ class TimerWindow:
         top.minsize(260, 120)
         top.title(cfg.get("label", "Countdown"))
 
+        # Track size for font scaling on any resize event
+        self._last_size = (top.winfo_width(), top.winfo_height())
+        top.bind("<Configure>", self._on_configure)
+
         bg = cfg["bg_color"]
 
         self.frame = tk.Frame(top, bg=bg, bd=0, highlightthickness=0)
@@ -565,12 +572,32 @@ class TimerWindow:
         w = max(260, self._rs_w + dw)
         h = max(120, self._rs_h + dh)
         self.top.geometry(f"{w}x{h}")
+        # Font scaling is now handled by _on_configure
+
+    def _on_configure(self, event):
+        """Handle font scaling on any window resize."""
+        # Only trigger if the dimensions actually changed (prevents loop with geometry calls)
+        w = self.top.winfo_width()
+        h = self.top.winfo_height()
+        if (w, h) == self._last_size:
+            return
+        self._last_size = (w, h)
+
+        # Scale font based on height, but also respect width to prevent clipping
         if self.cfg.get("style") == "modern":
+            # For modern style, height is the main constraint
             size = max(14, int(h * 0.34))
         else:
-            size = max(14, int(h * 0.28))
-        self.cfg["font_size"] = size
-        self._apply_font()
+            # For digital style, it's a single line, so width matters too
+            size_h = int(h * 0.28)
+            size_w = int(w * 0.12)  # Rough estimate for 10-12 chars
+            size = max(14, min(size_h, size_w))
+
+        if size != self.cfg.get("font_size"):
+            self.cfg["font_size"] = size
+            self._apply_font()
+            # We don't save settings on every pixel of resize to avoid disk thrash,
+            # it'll be saved on the next tick or manual save.
 
     # ---------- display layout (digital vs modern) ----------
 
@@ -708,11 +735,24 @@ class TimerWindow:
         if not self.top.winfo_exists():
             return
         now = datetime.now()
-        target = self._target_dt()
+        
+        if self.cfg.get("mode") == "duration":
+            try:
+                start = datetime.fromisoformat(self.cfg["start_time"])
+                duration = self.cfg.get("duration", 0)
+                target = start + timedelta(seconds=duration)
+            except Exception:
+                target = now
+        else:
+            target = self._target_dt()
+            
         remaining = target - now
         if remaining.total_seconds() <= 0:
             d = h = m = s = 0
-            self.sub.configure(text=f"Target reached: {target.strftime('%Y-%m-%d %I:%M %p')}")
+            if self.cfg.get("mode") == "duration":
+                self.sub.configure(text=f"Timer finished: {target.strftime('%I:%M:%S %p')}")
+            else:
+                self.sub.configure(text=f"Target reached: {target.strftime('%Y-%m-%d %I:%M %p')}")
             if not self._alarm_fired:
                 self._alarm_fired = True
                 self._fire_alarm()
@@ -721,7 +761,10 @@ class TimerWindow:
             d, rem = divmod(total_sec, 86400)
             h, rem = divmod(rem, 3600)
             m, s = divmod(rem, 60)
-            self.sub.configure(text=f"Target: {target.strftime('%Y-%m-%d %I:%M %p')}")
+            if self.cfg.get("mode") == "duration":
+                self.sub.configure(text=f"Timer ends at: {target.strftime('%I:%M:%S %p')}")
+            else:
+                self.sub.configure(text=f"Target: {target.strftime('%Y-%m-%d %I:%M %p')}")
         self._render_numbers(d, h, m, s)
         self.top.after(1000, self._tick)
 
@@ -758,6 +801,9 @@ class TimerWindow:
     def open_menu(self, event=None):
         menu = tk.Menu(self.top, tearoff=0)
         menu.add_command(label="Set Target Date/Time...", command=self.set_target)
+        menu.add_command(label="Set Duration (Timer Mode)...", command=self.set_duration)
+        if self.cfg.get("mode") == "duration":
+            menu.add_command(label="Restart Timer", command=self.restart_duration)
         menu.add_command(label="Set Label...", command=self.set_label)
         menu.add_separator()
         style_menu = tk.Menu(menu, tearoff=0)
@@ -853,8 +899,51 @@ class TimerWindow:
         picker = DateTimePicker(self.top, initial=cur)
         self.top.wait_window(picker.top)
         if picker.result is not None:
+            self.cfg["mode"] = "target"
             self.cfg["target"] = picker.result.replace(microsecond=0).isoformat()
             self._alarm_fired = False  # arm alarm for the new target
+            self.manager.save()
+
+    def set_duration(self):
+        dlg = tk.Toplevel(self.top)
+        dlg.title("Set Timer Duration")
+        dlg.transient(self.top)
+        dlg.configure(padx=12, pady=12)
+        dlg.resizable(False, False)
+
+        ttk.Label(dlg, text="Enter duration:").grid(row=0, column=0, columnspan=3, pady=(0, 6))
+        
+        h_var = tk.IntVar(value=0)
+        m_var = tk.IntVar(value=10)
+        s_var = tk.IntVar(value=0)
+
+        ttk.Label(dlg, text="Hrs").grid(row=1, column=0)
+        ttk.Label(dlg, text="Mins").grid(row=1, column=1)
+        ttk.Label(dlg, text="Secs").grid(row=1, column=2)
+
+        tk.Spinbox(dlg, from_=0, to=999, width=5, textvariable=h_var).grid(row=2, column=0, padx=2)
+        tk.Spinbox(dlg, from_=0, to=59, width=5, textvariable=m_var).grid(row=2, column=1, padx=2)
+        tk.Spinbox(dlg, from_=0, to=59, width=5, textvariable=s_var).grid(row=2, column=2, padx=2)
+
+        def save():
+            total_sec = (h_var.get() * 3600) + (m_var.get() * 60) + s_var.get()
+            if total_sec <= 0:
+                return
+            self.cfg["mode"] = "duration"
+            self.cfg["duration"] = total_sec
+            self.cfg["start_time"] = datetime.now().replace(microsecond=0).isoformat()
+            self._alarm_fired = False
+            self.manager.save()
+            dlg.destroy()
+
+        ttk.Button(dlg, text="Start Timer", command=save).grid(row=3, column=0, columnspan=3, pady=(12, 0))
+        dlg.bind("<Return>", lambda e: save())
+        dlg.grab_set()
+
+    def restart_duration(self):
+        if self.cfg.get("mode") == "duration":
+            self.cfg["start_time"] = datetime.now().replace(microsecond=0).isoformat()
+            self._alarm_fired = False
             self.manager.save()
 
     def set_label(self):
