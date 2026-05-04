@@ -32,7 +32,7 @@ except ImportError:
     winsound = None
 
 APP_NAME = "CountdownClock"
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 APP_COPYRIGHT = "© 2026 Chris Gonzales. All rights reserved."
 APPDATA = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
 SETTINGS_DIR = APPDATA / APP_NAME
@@ -254,11 +254,11 @@ DEFAULT_TIMER = {
     "start_time": "", # filled in when duration starts
     "style": "modern",  # "digital" or "modern"
     "font_family": DIGITAL_FONT_FAMILY,
-    "font_size": 54,
+    "font_size": 20,
     "font_color": "#FF0000",
     "bg_color": "#1a1a1a",
     "always_on_top": True,
-    "geometry": "560x200+200+200",
+    "geometry": "300x120+200+200",
     "label": "Countdown",
     "alarm": {"kind": "builtin", "name": "Alarm03.wav", "path": ""},
 }
@@ -273,7 +273,7 @@ def _new_timer(offset: int = 0) -> dict:
     # Stagger geometry so multiple new timers don't stack perfectly.
     x = 200 + (offset * 30)
     y = 200 + (offset * 30)
-    t["geometry"] = f"420x180+{x}+{y}"
+    t["geometry"] = f"300x120+{x}+{y}"
     return t
 
 
@@ -569,35 +569,77 @@ class TimerWindow:
     def _on_resize(self, event):
         dw = event.x_root - self._rs_x
         dh = event.y_root - self._rs_y
-        w = max(260, self._rs_w + dw)
-        h = max(120, self._rs_h + dh)
+        
+        # Proportional resize: enforce the aspect ratio that existed 
+        # when the resize operation started.
+        ratio = self._rs_w / self._rs_h
+        
+        if abs(dw) > abs(dh):
+            w = max(260, self._rs_w + dw)
+            h = int(w / ratio)
+        else:
+            h = max(120, self._rs_h + dh)
+            w = int(h * ratio)
+            
         self.top.geometry(f"{w}x{h}")
-        # Font scaling is now handled by _on_configure
 
     def _on_configure(self, event):
         """Handle font scaling on any window resize."""
-        # Only trigger if the dimensions actually changed (prevents loop with geometry calls)
         w = self.top.winfo_width()
         h = self.top.winfo_height()
-        if (w, h) == self._last_size:
+        if (w, h) == self._last_size or w < 2 or h < 2:
             return
         self._last_size = (w, h)
 
-        # Scale font based on height, but also respect width to prevent clipping
-        if self.cfg.get("style") == "modern":
-            # For modern style, height is the main constraint
-            size = max(14, int(h * 0.34))
-        else:
-            # For digital style, it's a single line, so width matters too
-            size_h = int(h * 0.28)
-            size_w = int(w * 0.12)  # Rough estimate for 10-12 chars
-            size = max(14, min(size_h, size_w))
-
-        if size != self.cfg.get("font_size"):
-            self.cfg["font_size"] = size
+        # Snap-to-fill scaling: find the largest font size that fits 
+        # within the current window dimensions.
+        new_size = self._calculate_fit_size(w, h)
+        
+        if new_size != self.cfg.get("font_size"):
+            self.cfg["font_size"] = new_size
             self._apply_font()
-            # We don't save settings on every pixel of resize to avoid disk thrash,
-            # it'll be saved on the next tick or manual save.
+
+    def _calculate_fit_size(self, w, h) -> int:
+        """Find the largest font size (10-400) that fits the window."""
+        fam = self.cfg.get("font_family", DIGITAL_FONT_FAMILY)
+        style = self.cfg.get("style", "modern")
+        
+        # Available space calculation (conservative)
+        # Top bar is 24px. Sub label is ~20px + padding.
+        # Let's reserve about 65px for chrome/labels.
+        avail_h = h - 65
+        avail_w = w - 30
+        
+        if style == "modern":
+            # For modern style, we have numbers + unit labels below.
+            # unit_size is 25% of font_size. Total height ~1.3 * font_size.
+            test_text = "000:00:00:00"
+            height_factor = 1.3
+        else:
+            test_text = "00d 00h 00m 00s"
+            height_factor = 1.1
+            
+        low = 10
+        high = 400
+        best = 10
+        
+        try:
+            f_test = tkfont.Font(family=fam, size=10, weight="bold")
+        except Exception:
+            f_test = tkfont.Font(family="Segoe UI", size=10, weight="bold")
+
+        while low <= high:
+            mid = (low + high) // 2
+            f_test.configure(size=mid)
+            tw = f_test.measure(test_text)
+            th = mid * height_factor
+            
+            if tw <= avail_w and th <= avail_h:
+                best = mid
+                low = mid + 1
+            else:
+                high = mid - 1
+        return best
 
     # ---------- display layout (digital vs modern) ----------
 
@@ -787,7 +829,10 @@ class TimerWindow:
     def _render_numbers(self, d: int, h: int, m: int, s: int):
         if self.cfg.get("style") == "modern":
             if len(self._modern_nums) == 4:
-                self._modern_nums[0].configure(text=f"{d:03d}")
+                # Use 2 digits for days if it fits, or 3 if needed. 
+                # The photo showed 3 digits (055).
+                d_str = f"{d:02d}" if d < 100 else f"{d:03d}"
+                self._modern_nums[0].configure(text=d_str)
                 self._modern_nums[1].configure(text=f"{h:02d}")
                 self._modern_nums[2].configure(text=f"{m:02d}")
                 self._modern_nums[3].configure(text=f"{s:02d}")
