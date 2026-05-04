@@ -7,6 +7,9 @@ A polished, always-on-top countdown widget for Windows. Days / hours / minutes /
 ## Highlights
 
 - **Multiple independent timers** — each in its own borderless window with its own target, label, font, colors, position, size, style, and end-of-timer alarm.
+- **Two countdown modes per timer:**
+  - **Target Date/Time** — countdown to a specific point on the calendar.
+  - **Duration (Timer)** — Windows-style timer that counts down from a set number of hours/minutes/seconds. Can be restarted instantly.
 - **Two display styles per timer:**
   - **Digital** — classic 7-segment LED look (uses the bundled DSEG7 Classic font).
   - **Modern** — large numbers separated by colons with `DAY(S) / HOUR(S) / MINUTE(S) / SECOND(S)` labels underneath.
@@ -69,6 +72,8 @@ You can change any of these from the settings menu.
 Open the menu by clicking the three dots in the top-right of any timer (or right-click anywhere on it):
 
 - **Set Target Date/Time…** — calendar picker (Sunday → Saturday, US-style) + 12-hour AM/PM time picker.
+- **Set Duration (Timer Mode)…** — set hours, minutes, and seconds to count down from. Restarts the timer in "Duration" mode.
+- **Restart Timer** — (Duration mode only) resets the countdown to its full duration and starts again.
 - **Set Label…** — optional caption above the numbers.
 - **Style** ▶ Digital (7-segment) or Modern (numbers + labels).
 - **Font Family & Size…** — pick any installed font + a custom size. Bundled `DSEG7 Classic` is always available.
@@ -91,7 +96,7 @@ Open the menu by clicking the three dots in the top-right of any timer (or right
 ## Window Behavior
 
 - **Borderless + draggable** — click and drag anywhere on the clock to move it.
-- **Resizable** — drag the small ◢ in the bottom-right. The font scales with height.
+- **Resizable** — drag the small ◢ in the bottom-right. The font scales automatically with window size (responsive height/width scaling).
 - **✕ button** — hides this timer; other timers keep ticking. Reopen it from any other timer's **Show Hidden Timers** submenu. Hiding the last visible timer exits the app gracefully (everything reappears on next launch).
 
 ## Settings File
