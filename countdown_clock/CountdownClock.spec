@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='CountdownClock-v1.9.0',
+    name='CountdownClock-v2.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

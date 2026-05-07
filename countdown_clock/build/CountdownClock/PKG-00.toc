@@ -1,4 +1,4 @@
-('C:\\Users\\cagon\\.openclaw\\workspace\\countdown_clock\\build\\CountdownClock\\CountdownClock-v1.8.0.pkg',
+('C:\\Users\\cagon\\.openclaw\\workspace\\countdown_clock\\build\\CountdownClock\\CountdownClock-v2.0.pkg',
  {'BINARY': True,
   'DATA': True,
   'EXECUTABLE': True,
