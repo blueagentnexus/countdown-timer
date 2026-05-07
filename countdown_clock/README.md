@@ -7,6 +7,8 @@ A polished, always-on-top countdown widget for Windows. Days / hours / minutes /
 ## Highlights
 
 - **Multiple independent timers** — each in its own borderless window with its own target, label, font, colors, position, size, style, and end-of-timer alarm.
+- **Pause/Resume** — Click anywhere on the timer numbers to pause the countdown; click again to resume. Works in both Target Date and Duration modes.
+- **Improved Startup Logic** — If a timer has already expired while the app was closed, the alarm will not trigger on startup.
 - **Two countdown modes per timer:**
   - **Target Date/Time** — countdown to a specific point on the calendar.
   - **Duration (Timer)** — Windows-style timer that counts down from a set number of hours/minutes/seconds. Can be restarted instantly.
