@@ -32,7 +32,7 @@ except ImportError:
     winsound = None
 
 APP_NAME = "CountdownClock"
-APP_VERSION = "2.0"
+APP_VERSION = "2.1.0"
 APP_COPYRIGHT = "© 2026 Chris Gonzales. All rights reserved."
 APPDATA = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
 SETTINGS_DIR = APPDATA / APP_NAME
@@ -543,12 +543,6 @@ class TimerWindow:
         self.grip.bind("<ButtonPress-1>", self._start_resize)
         self.grip.bind("<B1-Motion>", self._on_resize)
 
-        # Toggle play/pause on left-click of any display widget
-        for w in (self.display, *self._modern_nums, *self._modern_units, *self._modern_colons):
-            w.bind("<Button-1>", lambda e: self.toggle_pause(), add="+")
-        if self._digital_label:
-            self._digital_label.bind("<Button-1>", lambda e: self.toggle_pause(), add="+")
-
         top.bind("<Button-3>", self.open_menu)
         top.protocol("WM_DELETE_WINDOW", lambda: self.manager.hide_timer(self))
 
@@ -674,7 +668,7 @@ class TimerWindow:
         lbl.pack(expand=True, fill="both")
         lbl.bind("<ButtonPress-1>", self._start_drag)
         lbl.bind("<B1-Motion>", self._on_drag)
-        lbl.bind("<Button-3>", self.open_menu)
+        lbl.bind("<Button-1>", lambda e: self.toggle_pause(), add="+")
         self._digital_label = lbl
 
     def _build_modern_inside(self):
@@ -716,6 +710,7 @@ class TimerWindow:
         for w in (holder, *self._modern_nums, *self._modern_units, *self._modern_colons):
             w.bind("<ButtonPress-1>", self._start_drag)
             w.bind("<B1-Motion>", self._on_drag)
+            w.bind("<Button-1>", lambda e: self.toggle_pause(), add="+")
             w.bind("<Button-3>", self.open_menu)
 
     def _apply_font(self):
@@ -908,6 +903,12 @@ class TimerWindow:
 
     def open_menu(self, event=None):
         menu = tk.Menu(self.top, tearoff=0)
+        
+        paused = self.cfg.get("paused", False)
+        pause_label = "Resume Timer" if paused else "Pause Timer"
+        menu.add_command(label=pause_label, command=self.toggle_pause)
+        menu.add_separator()
+        
         menu.add_command(label="Set Target Date/Time...", command=self.set_target)
         menu.add_command(label="Set Duration (Timer Mode)...", command=self.set_duration)
         if self.cfg.get("mode") == "duration":
@@ -1208,6 +1209,7 @@ class TimerWindow:
             f"Active timers: {len(self.manager.timers)}\n"
             f"Startup shortcut: {STARTUP_SHORTCUT if startup_enabled() else '(off)'}\n\n"
             "Right-click or click the three dots for menu.\n"
+            "Click the timer numbers to Pause/Resume.\n"
             "✕ hides just this timer (others stay open).\n"
             "Reopen from any other timer's \"Show Hidden Timers\" menu.\n"
             "Use \"Delete This Timer\" in the menu to remove one permanently.",
