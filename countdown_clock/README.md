@@ -128,3 +128,4 @@ MIT for the application code. The bundled DSEG7 Classic Bold font is licensed un
 - **Just hide it temporarily?** Click the **✕** in the top-right.
 - **Right-click anywhere** on a timer also opens the settings menu.
 - **Stop a runaway alarm?** Click **OK** on the popup, or pick **Stop sound** in any timer's End-of-Timer Sound submenu.
+- **v2.1.0 (May 2026)** — Added Pause/Resume feature: Click anywhere on the timer display to pause or resume the countdown. This works in both Target Date and Duration modes.
